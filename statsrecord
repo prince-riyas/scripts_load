@@ -1,0 +1,98 @@
+using System;
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
+namespace NasEvergreeningStats.Models.Entities
+{
+    [Table("StatisticsRecords")]
+    public class StatisticsRecord
+    {
+        [Key]
+        public int Id { get; set; } = 1; // Single row table with PK=1
+
+        [Required]
+        public int LqRec { get; set; }
+
+        [Required]
+        public int TxtRec { get; set; }
+
+        [Required]
+        public int TotalExistErrorRec { get; set; }
+
+        [Required]
+        public int TotalRecords { get; set; }
+
+        [Required]
+        public int UnchngdAddr { get; set; }
+
+        [Required]
+        public int TxtLqAinUnchg { get; set; }
+
+        [Required]
+        public int LqHqAinUnchg { get; set; }
+
+        [Required]
+        public int UnchgLqAinChgd { get; set; }
+
+        [Required]
+        public int TxtLqAinChg { get; set; }
+
+        [Required]
+        public int LqHqAinChg { get; set; }
+
+        [Required]
+        public int PinCt { get; set; }
+
+        [Required]
+        public int ReapplyDinCt { get; set; }
+
+        [Required]
+        public int LinDeleted { get; set; }
+
+        [Required]
+        public long EdbnaeCaCpu { get; set; }
+
+        [Required]
+        public int EdbnaeCaElp { get; set; }
+
+        [Required]
+        public long EdbnaeCbCpu { get; set; }
+
+        [Required]
+        public int EdbnaeCbElp { get; set; }
+
+        [Required]
+        public long EdbnaeCcCpu { get; set; }
+
+        [Required]
+        public int EdbnaeCcElp { get; set; }
+
+        [Required]
+        public long EdbnaeCdCpu { get; set; }
+
+        [Required]
+        public int EdbnaeCdElp { get; set; }
+
+        [Required]
+        public long EdbnaeCeCpu { get; set; }
+
+        [Required]
+        public int EdbnaeCeElp { get; set; }
+
+        [Required]
+        public long TotalTimeCpu { get; set; }
+
+        [Required]
+        public int TotalTimeElp { get; set; }
+
+        [Required]
+        public int TxtHqAinChg { get; set; }
+
+        [Required]
+        public DateTime LastUpdated { get; set; } = DateTime.UtcNow;
+
+        [Required]
+        [StringLength(100)]
+        public string ModifiedBy { get; set; } = string.Empty;
+    }
+}
