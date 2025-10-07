@@ -1,0 +1,66 @@
+[
+  {
+    "header": "NUMBER OF LOW QUALITY INPUT RECORDS  :",
+    "detail": 50
+  },
+  {
+    "header": "NUMBER OF TEXT QUALITY INPUT RECORDS :",
+    "detail": 401407
+  },
+  {
+    "header": "NUMBER OF ERRORED RECORDS            :",
+    "detail": 2
+  },
+  {
+    "header": "TOTAL NUMBER OF INPUT RECORDS        :",
+    "detail": 401457
+  },
+  {
+    "header": "NO OF RECORDS WITH AIN AND QLTY UNCHG:",
+    "detail": 5752
+  },
+  {
+    "header": "NO OF TEXT TO LQ RECORD WITH SAME AIN:",
+    "detail": 0
+  },
+  {
+    "header": "NO OF LQ TO HQ RECORDS WITH UNCHG AIN:",
+    "detail": 0
+  },
+  {
+    "header": "NO OF RECORDS WITH CHNG AIN SAME QLTY:",
+    "detail": 275750
+  },
+  {
+    "header": "NO OF TEXT TO LQ RECORD WITH CHNG AIN:",
+    "detail": 115339
+  },
+  {
+    "header": "NO OF LQ TO HQ RECORDS WITH CHNGD AIN:",
+    "detail": 5
+  },
+  {
+    "header": "NO OF TEXT TO HQ RECORD WITH CHNG AIN:",
+    "detail": 4611
+  },
+  {
+    "header": "NUMBER OF PINS IMPACTED              :",
+    "detail": 324444
+  },
+  {
+    "header": "NUMBER OF DINS SENT TO REAPPLY       :",
+    "detail": 400142
+  },
+  {
+    "header": "NUMBER OF LINS DELETED               :",
+    "detail": 324444
+  },
+  {
+    "header": "TOTAL CPU TIME                       :",
+    "detail": 1493039071
+  },
+  {
+    "header": "TOTAL ELAPSED TIME                   :",
+    "detail": 2792
+  }
+]
