@@ -1,0 +1,1110 @@
+from flask import Blueprint, request, jsonify, current_app
+from ..config import logger, AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT_NAME, output_dir
+from openai import AzureOpenAI
+import logging
+import os
+import json
+import re
+import time  # Added import for time
+import traceback
+import uuid
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from ..utils.endpoint import sendtoEGPT
+from ..utils.prompts import create_unit_test_prompt, create_functional_test_prompt, create_cobol_to_dotnet_conversion_prompt
+from ..utils.logs import log_request_details, log_processing_step, log_gpt_interaction
+from ..utils.response import extract_json_from_response
+from ..utils.db_usage import detect_database_usage
+from ..utils.db_templates import get_db_template
+from .analysis import create_target_structure_analysis, enhanced_classify_files
+bp = Blueprint('conversion', __name__, url_prefix='/cobo')
+ 
+def save_json_response(cobol_filename, json_obj):
+    """Save the full JSON response to the json_output directory, using the COBOL filename as base."""
+    base_dir = os.path.dirname(output_dir)
+    json_output_dir = os.path.join(base_dir, "json_output")
+    os.makedirs(json_output_dir, exist_ok=True)
+    base_name = os.path.splitext(os.path.basename(cobol_filename))[0] if cobol_filename else f"converted_{int(time.time())}"
+    output_filename = f"{base_name}_output.json"
+    output_path = os.path.join(json_output_dir, output_filename)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(json_obj, f, indent=2, ensure_ascii=False)
+    return output_path
+ 
+def extract_project_name(target_structure):
+    """Extract project name from target structure"""
+    if isinstance(target_structure, dict):
+        return target_structure.get("project_name", "BankingSystem")
+    return "BankingSystem"
+ 
+def flatten_converted_code(converted_code, unit_test_code=None, project_id=None, target_structure=None):
+    """Create a standard .NET 8 folder structure and save it to the filesystem."""
+    files = {}
+ 
+    # Extract project name from target structure
+    project_name = extract_project_name(target_structure) if target_structure else "BankingSystem"
+    test_project_name = f"{project_name}.Tests"
+ 
+    # Process each file in converted_code
+    if isinstance(converted_code, list):
+        for file_info in converted_code:
+            if isinstance(file_info, dict):
+                file_name = file_info.get("file_name", "")
+                content = file_info.get("content", "")
+                path = file_info.get("path", "")
+ 
+                # Create proper file path based on target structure
+                if path:
+                    if not path.startswith(project_name):
+                        file_path = f"{project_name}/{path}/{file_name}"
+                    else:
+                        file_path = f"{path}/{file_name}"
+                else:
+                    file_path = f"{project_name}/{file_name}"
+ 
+                files[file_path] = content
+ 
+    # Add main project file if not exists
+    if not any(f.endswith(".csproj") for f in files.keys()):
+        csproj_content = f'''<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.4.0" />
+    <PackageReference Include="Serilog.Extensions.Hosting" Version="8.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="5.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
+    <PackageReference Include="AutoMapper.Extensions.Microsoft.DependencyInjection" Version="12.0.0" />
+    <PackageReference Include="FluentValidation.AspNetCore" Version="11.0.0" />
+  </ItemGroup>
+</Project>'''
+        files[f"{project_name}/{project_name}.csproj"] = csproj_content
+ 
+    # Add appsettings.json if not exists
+    if not any("appsettings.json" in f for f in files.keys()):
+        appsettings_content = '''{
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=localhost;Database=BankingSystem;Trusted_Connection=true;TrustServerCertificate=true;"
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning",
+      "Microsoft.EntityFrameworkCore.Database.Command": "Information"
+    }
+  },
+  "AllowedHosts": "*"
+}'''
+        files[f"{project_name}/appsettings.json"] = appsettings_content
+ 
+    # Add test project csproj file first
+    test_csproj_content = f'''<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.4.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.4.5" />
+    <PackageReference Include="Moq" Version="4.20.70" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.0" />
+    <PackageReference Include="FluentAssertions" Version="6.12.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../{project_name}/{project_name}.csproj" />
+  </ItemGroup>
+</Project>'''
+    files[f"{test_project_name}/{test_project_name}.csproj"] = test_csproj_content
+ 
+    # Add unit test files if unit_test_code is provided
+    if unit_test_code:
+        logger.info(f"Processing unit test code: {type(unit_test_code)}")
+ 
+        # Handle different formats of unit_test_code
+        if isinstance(unit_test_code, list):
+            # Format: [{"fileName": "...", "content": "..."}]
+            for test_file in unit_test_code:
+                if isinstance(test_file, dict):
+                    file_name = test_file.get("fileName")
+                    content = test_file.get("content", "")
+                    if file_name and content:
+                        files[f"{test_project_name}/Tests/{file_name}"] = content
+                        logger.info(f"Added unit test file: {file_name}")
+ 
+        elif isinstance(unit_test_code, dict):
+            # Handle different dict formats
+            if "unitTestFiles" in unit_test_code:
+                # Format: {"unitTestFiles": [{"fileName": "...", "content": "..."}]}
+                for test_file in unit_test_code["unitTestFiles"]:
+                    if isinstance(test_file, dict):
+                        file_name = test_file.get("fileName")
+                        content = test_file.get("content", "")
+                        if file_name and content:
+                            files[f"{test_project_name}/{file_name}"] = content
+                            logger.info(f"Added unit test file: {file_name}")
+            else:
+                # Direct content mapping
+                for file_name, content in unit_test_code.items():
+                    if content:
+                        files[f"{test_project_name}/{file_name}"] = content
+                        logger.info(f"Added unit test file: {file_name}")
+ 
+        elif isinstance(unit_test_code, str):
+            # Single string content - create default file
+            if unit_test_code.strip():
+                files[f"{test_project_name}/UnitTests.cs"] = unit_test_code
+                logger.info("Added single unit test file: UnitTests.cs")
+ 
+        # Add solution file
+        sln_content = f'''
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31912.275
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}}") = "{project_name}", "{project_name}/{project_name}.csproj", "{{11111111-1111-1111-1111-111111111111}}"
+EndProject
+Project("{{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}}") = "{test_project_name}", "{test_project_name}/{test_project_name}.csproj", "{{22222222-2222-2222-2222-222222222222}}"
+EndProject
+Global
+    GlobalSection(SolutionConfigurationPlatforms) = preSolution
+        Debug|Any CPU = Debug|Any CPU
+        Release|Any CPU = Release|Any CPU
+    EndGlobalSection
+    GlobalSection(ProjectConfigurationPlatforms) = postSolution
+        {{11111111-1111-1111-1111-111111111111}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+        {{11111111-1111-1111-1111-111111111111}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+        {{11111111-1111-1111-1111-111111111111}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+        {{11111111-1111-1111-1111-111111111111}}.Release|Any CPU.Build.0 = Release|Any CPU
+        {{22222222-2222-2222-2222-222222222222}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+        {{22222222-2222-2222-2222-222222222222}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+        {{22222222-2222-2222-2222-222222222222}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+        {{22222222-2222-2222-2222-222222222222}}.Release|Any CPU.Build.0 = Release|Any CPU
+    EndGlobalSection
+EndGlobal
+'''.strip()
+        files[f"{project_name}.sln"] = sln_content
+ 
+    # Save files to the filesystem
+    if project_id:
+        output_dir_path = os.path.join("output", "converted", project_id)
+        os.makedirs(output_dir_path, exist_ok=True)
+        for file_path, content in files.items():
+            full_path = os.path.join(output_dir_path, file_path)
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            logger.info(f"Saved file: {full_path}")
+ 
+    # --- POST-PROCESSING: Ensure appsettings.json and Program.cs are correct ---
+    # 1. Move any appsettings.json to the project root
+    appsettings_keys = [k for k in files if k.lower().endswith("appsettings.json") and k != f"{project_name}/appsettings.json"]
+    for key in appsettings_keys:
+        files[f"{project_name}/appsettings.json"] = files[key]
+        del files[key]
+ 
+    # 2. Ensure Program.cs exists in the project root
+    program_cs_path = f"{project_name}/Program.cs"
+    if not any(k.lower() == program_cs_path.lower() for k in files):
+        # Enhanced .NET 8 minimal hosting model template with EF Core
+        files[program_cs_path] = '''
+using Microsoft.AspNetCore.Builder;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using BankingSystem.Data;
+using BankingSystem.Repositories;
+ 
+var builder = WebApplication.CreateBuilder(args);
+ 
+// Add services to the container.
+builder.Services.AddControllers();
+ 
+// Configure Entity Framework Core with Pomelo and MySQL
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString)));
+ 
+// Register repositories
+builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
+ 
+var app = builder.Build();
+ 
+// Configure the HTTP request pipeline.
+if (app.Environment.IsDevelopment())
+{
+    app.UseDeveloperExceptionPage();
+}
+ 
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+ 
+// Ensure database is created
+using (var scope = app.Services.CreateScope())
+{
+    var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    dbContext.Database.EnsureCreated();
+}
+ 
+app.Run();
+ 
+'''
+ 
+    return files
+ 
+def get_source_code_from_project(project_id):
+    """Get source code from uploaded project files"""
+    try:
+        # Load from comprehensive analysis data if available
+        if hasattr(current_app, 'comprehensive_analysis_data') and current_app.comprehensive_analysis_data:
+            project_data = current_app.comprehensive_analysis_data
+            if project_data.get('project_id') == project_id:
+                cobol_files = project_data.get('cobol_files', {})
+                if cobol_files:
+                    logger.info(f"Found {len(cobol_files)} COBOL files in analysis data")
+                    return cobol_files
+ 
+        # Fallback: Load from uploads directory
+        uploads_dir = Path("uploads") / project_id
+        if uploads_dir.exists():
+            source_code = {}
+            for file_path in uploads_dir.glob("**/*"):
+                if file_path.is_file() and file_path.suffix.lower() in ['.cbl', '.cpy', '.jcl','.srb','.cntl']:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        source_code[file_path.name] = f.read()
+ 
+            if source_code:
+                logger.info(f"Loaded {len(source_code)} files from uploads directory")
+                return source_code
+ 
+        logger.warning(f"No source code found for project {project_id}")
+        return {}
+ 
+    except Exception as e:
+        logger.error(f"Error getting source code for project {project_id}: {str(e)}")
+        return {}
+ 
+def load_analysis_data(project_id):
+    """
+    Load analysis data from files for the given project.
+    Updated to handle the new structure where target_structure is generated during conversion.
+    """
+    try:
+        output_dir = os.path.join("output", "analysis", project_id)
+       
+        analysis_data = {}
+       
+        # Load COBOL analysis
+        cobol_analysis_path = os.path.join(output_dir, "cobol_analysis.json")
+        if os.path.exists(cobol_analysis_path):
+            with open(cobol_analysis_path, "r", encoding="utf-8") as f:
+                analysis_data["cobol_analysis"] = json.load(f)
+        else:
+            logger.warning(f"COBOL analysis not found at: {cobol_analysis_path}")
+            return {}
+       
+        # Load business requirements
+        business_req_path = os.path.join(output_dir, "business_requirements.json")
+        if os.path.exists(business_req_path):
+            with open(business_req_path, "r", encoding="utf-8") as f:
+                analysis_data["business_requirements"] = json.load(f)
+        else:
+            logger.warning(f"Business requirements not found at: {business_req_path}")
+            analysis_data["business_requirements"] = {}
+       
+        # Load technical requirements
+        tech_req_path = os.path.join(output_dir, "technical_requirements.json")
+        if os.path.exists(tech_req_path):
+            with open(tech_req_path, "r", encoding="utf-8") as f:
+                analysis_data["technical_requirements"] = json.load(f)
+        else:
+            logger.warning(f"Technical requirements not found at: {tech_req_path}")
+            analysis_data["technical_requirements"] = {}
+       
+        # Load target structure (if exists - it might be generated during conversion)
+        target_structure_path = os.path.join(output_dir, "target_structure.json")
+        if os.path.exists(target_structure_path):
+            with open(target_structure_path, "r", encoding="utf-8") as f:
+                analysis_data["target_structure"] = json.load(f)
+            logger.info("Target structure loaded from existing file")
+        else:
+            logger.info("Target structure not found - will be generated during conversion")
+            analysis_data["target_structure"] = {}
+       
+        # Load reverse engineering analysis (if exists)
+        reverse_eng_path = os.path.join(output_dir, "reverse_engineering_analysis.json")
+        if os.path.exists(reverse_eng_path):
+            with open(reverse_eng_path, "r", encoding="utf-8") as f:
+                analysis_data["reverse_engineering"] = json.load(f)
+        else:
+            logger.info("Reverse engineering analysis not found")
+            analysis_data["reverse_engineering"] = {}
+       
+        logger.info(f"Successfully loaded analysis data for project: {project_id}")
+        return analysis_data
+       
+    except Exception as e:
+        logger.error(f"Failed to load analysis data for project {project_id}: {str(e)}")
+        return {}
+ 
+def create_accuracy_assessment_prompt(source_code, business_requirements="", technical_requirements=""):
+    """Create prompt for generating structured program documentation from source code"""
+    return f"""
+**PROGRAM DOCUMENTATION CREATION TASK**
+ 
+You are an expert program analyst and technical writer.  
+Your task is to analyze the given source code and generate a **clear, complete, and structured documentation**.
+ 
+**SOURCE CODE:**
+{source_code}
+ 
+**BUSINESS REQUIREMENTS (if any):**
+{business_requirements}
+ 
+**TECHNICAL REQUIREMENTS (if any):**
+{technical_requirements}
+ 
+**DOCUMENTATION STRUCTURE (MANDATORY):**
+ 
+1. **Introduction**
+   - Purpose of the Document
+   - Program Overview (business context, role in system)
+ 
+2. **Scope and Assumptions**
+   - Scope (what the program includes/excludes)
+   - Assumptions (if any)
+ 
+3. **System Architecture**
+   - High-Level Design (components, modules, interactions – diagrams if possible)
+   - Environment and Platform Details (languages, frameworks, databases, tools)
+   - Dependencies (external systems, libraries, interfaces)
+   - Data Sources and Storage (files, DBs, queues)
+ 
+4. **Functional Description**
+   - Business Requirements (mapped to program functionality, if available)
+   - Main Processes (step-by-step breakdown of functionality)
+   - Modules and Subroutines (list of modules/classes/functions with their purposes)
+   - User Interfaces (screens, APIs, endpoints, if applicable)
+ 
+5. **Program Logic and Flow**
+   - Control Flow (pseudocode or execution path)
+   - Rules, Logic, Validations (business rules, error handling, validations, audit logging)
+   - Data Transformations (how input is processed into output)
+ 
+6. **Input and Output Specifications**
+   - Inputs (formats, sources, parameters, examples)
+   - Outputs (generated files, responses, DB updates with layouts/examples)
+ 
+7. **Summary**
+   - High-level recap of purpose, scope, key functionality, and recommendations
+ 
+**GUIDELINES:**
+- Make the document self-contained and explanatory.
+- Write for architects, developers, analysts, and new team members.
+- Focus on clarity, completeness, and business understanding.
+- Provide examples and pseudocode where possible.
+"""
+ 
+def save_accuracy_assessment(project_id, assessment_data):
+    """Save program documentation to local directory"""
+    try:
+        output_dir_path = os.path.join("output", "converted", project_id)
+        os.makedirs(output_dir_path, exist_ok=True)
+ 
+        # Save JSON version
+        json_path = os.path.join(output_dir_path, "program_documentation.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(assessment_data, f, indent=2, ensure_ascii=False)
+ 
+        # Save Markdown version
+        md_path = os.path.join(output_dir_path, "Program_Documentation.md")
+        md_content = format_assessment_as_markdown(assessment_data)
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(md_content)
+ 
+        logger.info(f"Program documentation saved to: {json_path} and {md_path}")
+        return json_path, md_path
+    except Exception as e:
+        logger.error(f"Error saving documentation: {str(e)}")
+        return None, None
+ 
+def format_assessment_as_markdown(assessment_data):
+    """Format the program documentation (handles nested JSON)"""
+    doc_data = assessment_data.get("Documentation", {})
+ 
+    # Helper to render nested dicts nicely
+    def dict_to_md(d):
+        if isinstance(d, dict):
+            lines = []
+            for k, v in d.items():
+                if isinstance(v, dict):
+                    sub_md = dict_to_md(v)
+                    lines.append(f"**{k}**:\n{sub_md}")
+                elif isinstance(v, list):
+                    list_md = "\n".join([f"  - {item}" if not isinstance(item, dict) else dict_to_md(item) for item in v])
+                    lines.append(f"**{k}**:\n{list_md}")
+                else:
+                    lines.append(f"**{k}**: {v}")
+            return "\n".join(lines)
+        return str(d)
+ 
+    def list_to_md(lst):
+        if isinstance(lst, list):
+            return "\n".join([f"- {item}" if not isinstance(item, dict) else dict_to_md(item) for item in lst])
+        return str(lst)
+ 
+    # Extract sections
+    intro = doc_data.get("1. Introduction", {})
+    scope = doc_data.get("2. Scope and Assumptions", {})
+    arch = doc_data.get("3. System Architecture", {})
+    func = doc_data.get("4. Functional Description", {})
+    logic = doc_data.get("5. Program Logic and Flow", {})
+    io_specs = doc_data.get("6. Input and Output Specifications", {})
+    summary = doc_data.get("7. Summary", {})
+ 
+    # Convert complex fields to Markdown
+    program_overview_md = dict_to_md(intro.get("Program Overview", {}))
+    scope_md = dict_to_md(scope.get("Scope", {}))
+    assumptions_md = list_to_md(scope.get("Assumptions", []))
+    high_level_design_md = dict_to_md(arch.get("High-Level Design", {}))
+    env_md = dict_to_md(arch.get("Environment and Platform Details", {}))
+    dependencies_md = list_to_md(arch.get("Dependencies", []))
+    data_sources_md = dict_to_md(arch.get("Data Sources and Storage", {}))
+    business_req_md = dict_to_md(func.get("Business Requirements", {}))
+    main_processes_md = list_to_md(func.get("Main Processes", []))
+    modules_md = dict_to_md(func.get("Modules and Subroutines", {}))
+    user_interface_md = func.get("User Interfaces", "Not applicable")
+    control_flow_md = logic.get("Control Flow", "Not provided")
+    rules_md = dict_to_md(logic.get("Rules, Logic, Validations", {}))
+    data_trans_md = logic.get("Data Transformations", "Not provided")
+    inputs_md = dict_to_md(io_specs.get("Inputs", {}))
+    outputs_md = dict_to_md(io_specs.get("Outputs", {}))
+    summary_md = dict_to_md(summary)
+ 
+    return f"""# Program Documentation
+ 
+## 1. Introduction
+### Purpose of the Document
+{intro.get("Purpose of the Document", "Not provided")}
+ 
+### Program Overview
+{program_overview_md}
+ 
+---
+ 
+## 2. Scope and Assumptions
+### Scope
+{scope_md}
+ 
+### Assumptions
+{assumptions_md}
+ 
+---
+ 
+## 3. System Architecture
+### High-Level Design
+{high_level_design_md}
+ 
+### Environment and Platform Details
+{env_md}
+ 
+### Dependencies
+{dependencies_md}
+ 
+### Data Sources and Storage
+{data_sources_md}
+ 
+---
+ 
+## 4. Functional Description
+### Business Requirements
+{business_req_md}
+ 
+### Main Processes
+{main_processes_md}
+ 
+### Modules and Subroutines
+{modules_md}
+ 
+### User Interfaces
+{user_interface_md}
+ 
+---
+ 
+## 5. Program Logic and Flow
+### Control Flow
+{control_flow_md}
+ 
+### Rules, Logic, Validations
+{rules_md}
+ 
+### Data Transformations
+{data_trans_md}
+ 
+---
+ 
+## 6. Input and Output Specifications
+### Inputs
+{inputs_md}
+ 
+### Outputs
+{outputs_md}
+ 
+---
+ 
+## 7. Summary
+{summary_md}
+ 
+---
+*Generated on {time.strftime('%Y-%m-%d %H:%M:%S')}*
+"""
+ 
+@bp.route("/convert", methods=["POST"])
+def convert_cobol_to_csharp():
+    try:
+        data = request.json
+        project_id = data.get("projectId")
+ 
+        if not project_id:
+            logger.error("Project ID is missing in request")
+            return jsonify({"error": "Project ID is missing. Please upload files first.", "files": {}}), 400
+ 
+        logger.info(f"Starting conversion for project: {project_id}")
+ 
+        # STEP 1: GENERATE TARGET STRUCTURE (moved from analyze_requirements)
+        log_processing_step("Generating target structure analysis", {"project_id": project_id}, 1)
+       
+        # Load analysis data and additional files needed for target structure
+        analysis_data = load_analysis_data(project_id)
+       
+        if not analysis_data.get("cobol_analysis"):
+            logger.error(f"No COBOL analysis data found for project: {project_id}")
+            return jsonify({"error": "No analysis data found. Please run analysis first.", "files": {}}), 400
+ 
+        # Load file_data and classified_files from saved files
+        output_dir = os.path.join("output", "analysis", project_id)
+       
+        try:
+            with open(os.path.join(output_dir, "file_data.json"), "r", encoding="utf-8") as f:
+                file_data = json.load(f)
+        except FileNotFoundError:
+            logger.error(f"file_data.json not found for project: {project_id}")
+            return jsonify({"error": "File data not found. Please run analysis first.", "files": {}}), 400
+ 
+        try:
+            with open(os.path.join(output_dir, "classified_files.json"), "r", encoding="utf-8") as f:
+                classified = json.load(f)
+        except FileNotFoundError:
+            logger.error(f"classified_files.json not found for project: {project_id}")
+            return jsonify({"error": "Classified files data not found. Please run analysis first.", "files": {}}), 400
+ 
+        # Generate target structure now
+        business_requirements = analysis_data.get("business_requirements", {})
+        technical_requirements = analysis_data.get("technical_requirements", {})
+       
+        target_structure = create_target_structure_analysis(
+            project_id,
+            file_data,
+            classified,
+            business_requirements,
+            technical_requirements
+        )
+ 
+        # Save target structure
+        target_structure_path = os.path.join(output_dir, "target_structure.json")
+        with open(target_structure_path, "w", encoding="utf-8") as f:
+            json.dump(target_structure, f, indent=2)
+        logger.info(f"Target structure saved to: {target_structure_path}")
+ 
+        log_processing_step("Target structure generation completed", {
+            "target_structure_created": bool(target_structure and "error" not in target_structure)
+        }, 2)
+ 
+        # STEP 2: CONTINUE WITH REGULAR CONVERSION FLOW
+        cobol_json = analysis_data["cobol_analysis"]
+        reverse_engineering = analysis_data.get("reverse_engineering", {})
+ 
+        logger.info(f"Loaded analysis data for project: {project_id}")
+        logger.info(f"Reverse engineering available: {bool(reverse_engineering)}")
+ 
+        # Get source code - try multiple sources
+        source_code = {}
+ 
+        # First try: from request data
+        request_source_code = data.get("sourceCode", {})
+        if request_source_code:
+            logger.info("Using source code from request")
+            if isinstance(request_source_code, str):
+                try:
+                    request_source_code = json.loads(request_source_code)
+                except json.JSONDecodeError:
+                    logger.error("Failed to parse sourceCode from request")
+                    request_source_code = {}
+ 
+            # Extract content from file objects
+            for file_name, file_data_item in request_source_code.items():
+                if isinstance(file_data_item, dict) and 'content' in file_data_item:
+                    source_code[file_name] = file_data_item['content']
+                elif isinstance(file_data_item, str):
+                    source_code[file_name] = file_data_item
+ 
+        # Second try: from project files
+        if not source_code:
+            logger.info("Getting source code from project files")
+            source_code = get_source_code_from_project(project_id)
+ 
+        # Validate source code
+        if not source_code:
+            logger.error(f"No source code found for project: {project_id}")
+            return jsonify({"error": "No source code found. Please upload COBOL files first.", "files": {}}), 400
+ 
+        # Filter only COBOL-related files
+        cobol_code_list = []
+        for file_name, content in source_code.items():
+            if isinstance(content, str) and content.strip():
+                # Check if it's a COBOL file
+                if (file_name.lower().endswith(('.cbl', '.cpy', '.jcl','.srb','.cntl')) or
+                    any(keyword in content.upper() for keyword in ['IDENTIFICATION DIVISION', 'PROGRAM-ID', 'PROCEDURE DIVISION', 'WORKING-STORAGE'])):
+                    cobol_code_list.append(content)
+                    logger.info(f"Added COBOL file: {file_name}")
+ 
+        if not cobol_code_list:
+            logger.error("No valid COBOL code found in source files")
+            return jsonify({"error": "No valid COBOL code found for conversion.", "files": {}}), 400
+ 
+        logger.info(f"Found {len(cobol_code_list)} COBOL files for conversion")
+ 
+        # Prepare conversion data
+        cobol_code_str = "\n".join(cobol_code_list)
+        target_structure_str = json.dumps(target_structure, indent=2)
+        business_requirements_str = json.dumps(business_requirements, indent=2)
+        technical_requirements_str = json.dumps(technical_requirements, indent=2)
+        reverse_engineering_str = json.dumps(reverse_engineering, indent=2) if reverse_engineering else "{}"
+ 
+        # Detect database usage and get DB template
+        db_usage = detect_database_usage(cobol_code_str, source_language="COBOL")
+        db_type = db_usage.get("db_type", "none")
+ 
+        # Use enhanced EF Core template for better implementation
+        if db_usage.get("has_db", False):
+            db_setup_template = get_db_template("C# Advanced")
+            logger.info("Using advanced Entity Framework Core template")
+        else:
+            db_setup_template = get_db_template("C#")
+            logger.info("Using standard Entity Framework Core template")
+ 
+        # Create conversion prompt using the imported function
+        base_conversion_prompt = create_cobol_to_dotnet_conversion_prompt()
+ 
+        # Enhanced conversion prompt with additional context
+        conversion_prompt = f"""
+**CONVERSION TASK: Convert COBOL to C# .NET 8**
+ 
+Very Important - Please generate data retrieval logic extract, extract business logic and implement in .net 8 properly, do reasoning and then generate good output
+**Donot generate any placeholder comments or TODOs, every method must have a complete implementation with actual business logic.**
+**Do not generate folder with file name, inside controller directly controller files should be there and like wise for all other files.**
+ 
+**Conversion Prompts**
+{base_conversion_prompt}
+ 
+**SOURCE CODE:**
+{cobol_code_str}
+ 
+**Target Structure**
+{target_structure_str}
+ 
+**DATABASE SETUP TEMPLATE:**
+{db_setup_template}
+ 
+**MANDATORY: Each service method must:**
+1. Have complete parameter validation with detailed error messages
+2. Include comprehensive error handling with try-catch blocks and specific exception types
+3. Log entry and exit points with detailed context information
+4. Return appropriate response objects with proper status codes and messages
+5. Handle null checks and edge cases with defensive programming
+6. Include business rule validation based on COBOL logic
+7. Implement actual business logic from COBOL source code analysis
+8. Use proper async/await patterns for database operations
+9. Include data transformation and mapping logic
+10. Implement caching strategies where appropriate
+11. Add performance monitoring and metrics
+12. Include comprehensive input sanitization and validation
+
+**MANDATORY IMPLEMENTATION RULES:**
+
+**DB & Entities:** Use Entity Framework Core exclusively for all I/O—no files or external paths. Auto-detect and map all copybooks (e.g., input/output records) to SQL entities/tables with precise field types (e.g., PIC 9(08) → int/long). For input files (e.g., sequential reads), map to dedicated tables. For output files, map to insert/update tables. For I/O or cumulative files (e.g., read-modify-write patterns like stats), create a single-row table (e.g., with Id=1 PK); implement logic to: Read existing row at initialization, accumulate deltas from input processing (e.g., counters from loops), update totals (e.g., add current-run metrics like CPU/ELP), and save back at termination. Preserve all prior values; assume initial seeding via external scripts (e.g., Python for sample data). For report-like output files (e.g., sequential writes of formatted detail lines with headers and values), create a separate multi-row table with fields for header text, detail value, and optional run identifier; insert one row per formatted line during termination processing.
+**Business Logic Extraction:**
+
+Identify accumulators (e.g., WA-COUNTS) and populate from inputs (e.g., EVALUATE/ADD in loops).
+Map PERFORM sections to async service methods (e.g., init → open/read DB, main process → loop over input tables, term → update cumulative + generate outputs).
+Handle modes/flags (e.g., UPDATE/READ from linkage) as runtime params from DB/config.
+For outputs like detail reports, generate derived tables/rows (e.g., formatted lines with headers/values).
+
+
+**Endpoint Derivation:** Analyze FILE-CONTROL, SELECTs, and PERFORM flows to derive minimal, logical REST endpoints (2-4 max, grouped by function—not one per section, not monolithic). Examples: Group input reads/accumulation (e.g., audit stats) → single POST/PUT /process-inputs endpoint (reads tables, accumulates to cumulative); conditional writes (e.g., DIN reapply in UPDATE mode) → dedicated POST /generate-reapply; report outputs (e.g., detail file writes) → GET /generate-display (queries accumulators, inserts formatted rows). Preserve full end-to-end: Endpoints chain if needed (e.g., process-inputs updates cumulative for later display). Use query params for modes; return JSON with status, counts, and output table refs.
+**Service Methods:** Fully async with await for DB ops. Include: Parameter validation (detailed errors, e.g., numeric checks), try-catch (specific exceptions like DbUpdateException), logging (entry/exit with context like counts), null/edge case handling (e.g., EOF flags → empty results), business rules from COBOL (e.g., conditionals for writes), data mapping/transformation (e.g., record layouts to entities), input sanitization, and metrics (e.g., Stopwatch for timings).
+**Inputs/Outputs:** Strictly SQL-based—no JSON at any stage. Endpoints/services read from input tables (e.g., audit/DIN equivalents), process with accumulators, update cumulative table, and produce output tables (e.g., reapply/detail). Use transactions for atomicity in updates.
+**Configs:** Limit appsettings.json to ConnectionStrings, Logging, JwtSettings. No file paths; omit any "FilePaths" section. Populate Configurations folder with all necessary classes (e.g., DbContext, migrations).
+**Generics & Robustness:** Ensure code handles variable record counts, errors (e.g., errored-rec counters), and modes dynamically. Seed cumulative tables with zeros if no data; external scripts can populate samples.
+
+***IMPORTANT CONFIGURATION RULES:***
+
+- Do NOT generate any file path references in appsettings.json or anywhere else in the solution.
+- The "FilePaths" section must be completely omitted.
+- All inputs and outputs must be handled via SQL tables only.
+- Any configuration values (e.g., batch job schedules, call modes) must be retrieved from SQL tables at runtime.
+- appsettings.json must only contain:
+  - ConnectionStrings
+  - Logging configuration
+  - JwtSettings (if applicable)
+
+ 
+**REQUIRED OUTPUT:** Provide a complete C# .NET 8 solution with proper folder structure
+"""
+ 
+        # Call Azure OpenAI for conversion
+        conversion_msgs = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a senior software engineer with deep expertise in COBOL-to-.NET 8 migrations. "
+                    "Your task is to analyze and convert COBOL source code into a fully functional, production-ready .NET 8 C# application.\n\n"
+ 
+                    "**CORE RESPONSIBILITIES:**\n"
+                    "- Perform comprehensive reverse engineering of COBOL code to extract business logic, data processing rules, and algorithms.\n"
+                    "- Convert COBOL logic into clean, maintainable, and scalable C# code using modern .NET 8 features.\n"
+                    "- Apply enterprise-grade architecture patterns, including Clean Architecture, SOLID principles, and dependency injection.\n"
+                    "- Accurately preserve and implement all original business logic in the migrated application.\n"
+                    "- Ensure code is robust, performant, and production-ready, including proper error handling and logging.\n\n"
+ 
+                    "**SERVICE IMPLEMENTATION GUIDELINES:**\n"
+                    "- **Data Access Layer:** Convert COBOL file operations to Entity Framework Core database operations\n"
+                    "- **Business Logic:** Extract and implement all business rules from COBOL PROCEDURE DIVISION\n"
+                    "- **Validation:** Convert COBOL data validation rules to C# validation attributes and custom validators\n"
+                    "- **Error Handling:** Implement comprehensive exception handling with specific exception types\n"
+                    "- **Logging:** Add detailed logging for all operations with structured logging patterns\n"
+                    "- **Performance:** Implement caching, pagination, and optimization for large datasets\n"
+                    "- **Security:** Add input sanitization, SQL injection prevention, and proper authentication\n"
+                    "- **Testing:** Include comprehensive unit tests and integration tests\n\n"
+ 
+                    "**COBOL TO C# MAPPING PATTERNS:**\n"
+                    "- COBOL PERFORM → C# method calls with proper async/await\n"
+                    "- COBOL IF-THEN-ELSE → C# if/else statements with null checking\n"
+                    "- COBOL arithmetic (ADD/SUBTRACT/MULTIPLY/DIVIDE) → C# arithmetic with overflow checking\n"
+                    "- COBOL file operations → Entity Framework Core queries with proper LINQ\n"
+                    "- COBOL sort operations → LINQ OrderBy/ThenBy with proper comparers\n"
+                    "- COBOL search logic → LINQ Where clauses with optimized queries\n"
+                    "- COBOL data validation → C# validation attributes and custom validators\n"
+                    "- COBOL transaction management → Entity Framework Core transactions\n\n"
+ 
+                    "**CRITICAL REQUIREMENTS:**\n"
+                    "- DO NOT generate placeholder comments or TODOs.\n"
+                    "- DO NOT skip or partially implement any logic.\n"
+                    "- DO NOT ignore complex COBOL constructs — you must provide complete modern equivalents.\n"
+                    "- DO NOT hardcode values intended for configuration files.\n"
+                    "- EVERY service method must contain actual implementation logic.\n"
+                    "- Implement proper async/await patterns for all database operations.\n"
+                    "- Include comprehensive error handling and validation.\n\n"
+ 
+                    "Important: "
+                    "**Generate path as Projectname/Controller/filename, so the filename will be actual file, in path name only ProjectName/Controller/ and similar for all others too**"
+ 
+                    "**DELIVERABLE FORMAT:**\n"
+                    "Return the output as a JSON object in the following format:\n"
+                    "{\n"
+                    "  \"converted_code\": [\n"
+                    "    {\n"
+                    "      \"file_name\": \"string\",\n"
+                    "      \"path\": \"string\",\n"
+                    "      \"content\": \"string\"\n"
+                    "    }\n"
+                    "  ],\n"
+                    "  \"conversion_notes\": [\n"
+                    "    {\"note\": \"string\", \"severity\": \"Info\" | \"Warning\" | \"Error\"}\n"
+                    "  ]\n"
+                    "}\n\n"
+ 
+                    "**QUALITY STANDARDS:**\n"
+                    "- The code must compile without errors.\n"
+                    "- All business logic must be faithfully preserved and implemented.\n"
+                    "- Use idiomatic C# naming conventions and modern .NET 8 features.\n"
+                    "- Implement input validation, exception safety, and logging.\n"
+                    "- Ensure thread safety and performance optimization where appropriate.\n"
+                    "- Include comprehensive unit tests for all business logic.\n"
+                )
+            },
+            {
+                "role": "user",
+                "content": conversion_prompt
+            }
+        ]
+ 
+        log_processing_step("Calling Azure OpenAI for conversion", {}, 3)
+ 
+        if reverse_engineering:
+            logger.info(f"Using reverse engineering analysis for comprehensive conversion insights")
+        else:
+            logger.warning("No reverse engineering analysis available - conversion will proceed without deep structural insights")
+ 
+        conversion_response = sendtoEGPT(conversion_msgs)
+ 
+        # Extract and parse the JSON response
+        converted_json = extract_json_from_response(conversion_response)
+ 
+        if not converted_json:
+            logger.error("Failed to extract JSON from conversion response")
+            return jsonify({"error": "Failed to process conversion response.", "files": {}}), 500
+ 
+        # --- BEGIN: Unit and Functional Test Generation Integration ---
+        # Extract Controllers and Services for test generation
+        converted_code = converted_json.get("converted_code", [])
+        controllers = []
+        services = []
+        for file_info in converted_code:
+            if isinstance(file_info, dict):
+                file_name = file_info.get("file_name", "")
+                path = file_info.get("path", "")
+                content = file_info.get("content", "")
+                # Heuristics: look for 'Controller' or 'Service' in file name or path
+                if "controller" in file_name.lower() or "controller" in path.lower():
+                    controllers.append({"file_name": file_name, "path": path, "content": content})
+                if "service" in file_name.lower() or "service" in path.lower():
+                    services.append({"file_name": file_name, "path": path, "content": content})
+ 
+        # Compose a minimal dict to pass to the unit/functional test prompt
+        unit_test_input = {
+            "Controllers": controllers,
+            "Services": services
+        }
+        print("[DEBUG] Extracted controllers:", controllers)
+        print("[DEBUG] Extracted services:", services)
+ 
+        # Generate unit and functional test prompts
+        print("[DEBUG] Creating unit test prompt with input:", unit_test_input)
+        unit_test_prompt = create_unit_test_prompt(
+            "C#",
+            unit_test_input,
+        )
+        unit_test_system = (
+            "You are an expert test engineer specializing in writing comprehensive unit tests for .NET 8 applications. "
+            "For EACH Controller class found, generate a separate unit test file named '[ControllerName]Tests.cs'. "
+            "Return your response in JSON as follows:\n"
+            "{\n"
+            '  "unitTestFiles": [{'
+            '       "fileName": "[ControllerName]Tests.cs",'
+            '       "content": "...unit test code..."'
+            '   }, ...],'
+            '  "testDescription": "...",'
+            '  "coverage": [...],'
+            '  "businessRuleTests": [...]'
+            "}\n"
+        )
+        unit_test_messages = [
+            {"role": "system", "content": unit_test_system},
+            {"role": "user", "content": unit_test_prompt}
+        ]
+        print("[DEBUG] Sending unit test messages to LLM:", unit_test_messages)
+ 
+        functional_test_prompt = create_functional_test_prompt(
+            "C#",
+            unit_test_input
+        )
+        functional_test_system = (
+            "You are an expert QA engineer specializing in creating functional tests for .NET 8 applications. "
+            "You create comprehensive test scenarios that verify the application meets all business requirements. "
+            "Focus on user journey tests, acceptance criteria, and business domain validation. "
+            "Return your response in JSON format with the following structure:\n"
+            "{\n"
+            '  "functionalTests": [\n'
+            '    {"id": "FT1", "title": "Test scenario title", "steps": ["Step 1", "Step 2"], "expectedResult": "Expected outcome", "businessRule": "Related business rule"},\n'
+            '    {"id": "FT2", "title": "Another test scenario", "steps": ["Step 1", "Step 2"], "expectedResult": "Expected outcome", "businessRule": "Related business rule"}\n'
+            '  ],\n'
+            '  "testStrategy": "Description of the overall testing approach",\n'
+            '  "domainCoverage": ["List of business domain areas covered"]\n'
+            "}"
+        )
+        functional_test_messages = [
+            {"role": "system", "content": functional_test_system},
+            {"role": "user", "content": functional_test_prompt}
+        ]
+ 
+        # Use ThreadPoolExecutor to run unit tests, functional tests, and accuracy assessment in parallel
+        unit_test_code = None
+        unit_test_json = {}
+        functional_test_json = {}
+        accuracy_assessment_json = {}
+        unit_test_content = None
+        functional_test_content = None
+        accuracy_content = None
+ 
+        # Create accuracy assessment prompt
+        accuracy_prompt = create_accuracy_assessment_prompt(
+            cobol_code_str,
+            business_requirements_str,
+            technical_requirements_str
+        )
+ 
+        accuracy_system = (
+            "You are an expert code conversion analyst specializing in COBOL-to-.NET conversion quality assessment. "
+            "Your role is to provide comprehensive, objective analysis of conversion accuracy, business logic preservation, "
+            "and execution readiness. Be thorough, specific, and provide actionable insights. "
+            "Always return your response in valid JSON format as specified in the prompt."
+        )
+ 
+        accuracy_messages = [
+            {"role": "system", "content": accuracy_system},
+            {"role": "user", "content": accuracy_prompt}
+        ]
+ 
+        log_processing_step("Running parallel test and accuracy assessment generation", {}, 4)
+ 
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {
+                executor.submit(sendtoEGPT, unit_test_messages): "unit",
+                executor.submit(sendtoEGPT, functional_test_messages): "functional",
+                executor.submit(sendtoEGPT, accuracy_messages): "accuracy"
+            }
+ 
+            for future in as_completed(futures):
+                test_type = futures[future]
+                try:
+                    result = future.result()
+                    if test_type == "unit":
+                        unit_test_content = result.strip()
+                        print("[DEBUG] Raw unit test LLM response:", unit_test_content)
+                        try:
+                            unit_test_json = json.loads(unit_test_content)
+                            print("[DEBUG] Parsed unit test JSON:", unit_test_json)
+                            logger.info("✅ Unit test JSON parsed successfully")
+                        except json.JSONDecodeError:
+                            logger.warning("⚠️ Failed to parse unit test JSON directly")
+                            unit_test_json = extract_json_from_response(unit_test_content)
+                            print("[DEBUG] Extracted unit test JSON via fallback:", unit_test_json)
+                        unit_test_code = unit_test_json.get("unitTestFiles")
+                        if not unit_test_code:
+                            unit_test_code = unit_test_json.get("unitTestCode", "")
+                        print("[DEBUG] Final unit test code:", unit_test_code)
+ 
+                    elif test_type == "functional":
+                        functional_test_content = result.strip()
+                        try:
+                            functional_test_json = json.loads(functional_test_content)
+                            logger.info("✅ Functional test JSON parsed successfully")
+                        except json.JSONDecodeError:
+                            logger.warning("⚠️ Failed to parse functional test JSON directly")
+                            functional_test_json = extract_json_from_response(functional_test_content)
+ 
+                    elif test_type == "accuracy":
+                        accuracy_content = result.strip()
+                        try:
+                            accuracy_assessment_json = json.loads(accuracy_content)
+                            logger.info("✅ Accuracy assessment JSON parsed successfully")
+                        except json.JSONDecodeError:
+                            logger.warning("⚠️ Failed to parse accuracy assessment JSON directly")
+                            accuracy_assessment_json = extract_json_from_response(accuracy_content)
+ 
+                        # Save accuracy assessment to local directory
+                        if accuracy_assessment_json:
+                            save_accuracy_assessment(project_id, accuracy_assessment_json)
+ 
+                except Exception as e:
+                    logger.error(f"{test_type.capitalize()} generation failed: {e}")
+                    if test_type == "unit":
+                        print("[ERROR] Exception during unit test generation:", e)
+                        try:
+                            unit_test_json = json.loads(unit_test_content)
+                            print("[DEBUG] Exception fallback, parsed unit test JSON:", unit_test_json)
+                            unit_test_code = unit_test_json.get("unitTestFiles", [])
+                        except Exception as ex:
+                            print("[ERROR] Exception fallback also failed:", ex)
+                            unit_test_json = {}
+                            unit_test_code = []
+                    elif test_type == "functional":
+                        functional_test_json = {}
+                    elif test_type == "accuracy":
+                        accuracy_assessment_json = {}
+ 
+        # Save converted code JSON
+        output_dir_path = os.path.join("output", "converted", project_id)
+        os.makedirs(output_dir_path, exist_ok=True)
+        output_path = os.path.join(output_dir_path, "converted_csharp.json")
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(converted_json, f, indent=2)
+        logger.info(f"Converted C# code saved to: {output_path}")
+ 
+        # Create and save .NET folder structure
+        files = flatten_converted_code(
+            converted_json.get("converted_code", []),
+            unit_test_code,
+            project_id,
+            target_structure
+        )
+ 
+        # Update comprehensive analysis data with target structure
+        if hasattr(current_app, 'comprehensive_analysis_data'):
+            current_app.comprehensive_analysis_data["target_structure"] = target_structure
+       
+        log_processing_step("Conversion completed successfully", {
+            "generated_files_count": len(files),
+            "target_structure_included": bool(target_structure and "error" not in target_structure),
+            "unit_tests_generated": bool(unit_test_code),
+            "functional_tests_generated": bool(functional_test_json),
+            "accuracy_assessment_completed": bool(accuracy_assessment_json)
+        }, 5)
+ 
+        logger.info(f"Generated {len(files)} files for .NET project")
+ 
+        return jsonify({
+            "status": "success",
+            "project_id": project_id,
+            "converted_code": converted_json.get("converted_code", []),
+            "conversion_notes": converted_json.get("conversion_notes", []),
+            "target_structure": target_structure,  # Include target structure in response
+            "unit_tests": unit_test_code,
+            "unit_test_details": unit_test_json,
+            "functional_tests": functional_test_json,
+            "accuracy_assessment": accuracy_assessment_json,
+            "files": files,
+            "reverse_engineering_used": bool(reverse_engineering),
+            "conversion_quality": "enhanced" if (reverse_engineering) else "standard"
+        })
+ 
+    except Exception as e:
+        logger.error(f"❌ Conversion failed: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e), "files": {}}), 500
+ 
+@bp.route("/converted-files/<base_name>", methods=["GET"])
+def get_converted_files(base_name):
+    """Return the file tree and contents for a given conversion (by base_name) from ConvertedCode."""
+    try:
+        converted_code_dir = os.path.join("output", "converted", base_name)
+        if not os.path.exists(converted_code_dir):
+            return jsonify({"error": "Converted files not found"}), 404
+ 
+        file_tree = {"files": {}}
+        for root, dirs, files in os.walk(converted_code_dir):
+            for file in files:
+                file_path = os.path.join(root, file)
+                rel_path = os.path.relpath(file_path, converted_code_dir)
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        file_tree["files"][rel_path] = f.read()
+                except Exception as e:
+                    logger.error(f"Error reading file {file_path}: {str(e)}")
+                    file_tree["files"][rel_path] = f"Error reading file: {str(e)}"
+ 
+        return jsonify(file_tree)
+    except Exception as e:
+        logger.error(f"Error getting converted files: {str(e)}")
+        return jsonify({"error": str(e)}), 500
