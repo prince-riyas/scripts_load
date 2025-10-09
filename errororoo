@@ -1,0 +1,1392 @@
+functionalTests
+: 
+Array(18)
+0
+: 
+{description: "Verify that ProcessInputsAsync successfully proces… callMode is 'U' and loggingLevel is default (1).", expectedResult: 'Response status is 200 OK with a success message and counts of DIN, PIN, LIN, and errored records.', id: '1', preconditions: 'StatsProcessingService and dependencies are proper…ialized; valid audit and DIN files are available.', priority: 'High', …}
+1
+: 
+{description: "Verify that ProcessInputsAsync successfully proces…nputs when callMode is 'R' and loggingLevel is 2.", expectedResult: 'Response status is 200 OK with a success message and counts of DIN, PIN, LIN, and errored records.', id: '2', preconditions: 'StatsProcessingService and dependencies are proper…ialized; valid audit and DIN files are available.', priority: 'High', …}
+2
+: 
+{description: "Verify that ProcessInputsAsync returns BadRequest when callMode is invalid (not 'U' or 'R').", expectedResult: "Response status is 400 BadRequest with message 'In…lMode parameter. Allowed values are 'U' or 'R'.'.", id: '3', preconditions: 'None.', priority: 'High', …}
+3
+: 
+{description: 'Verify that ProcessInputsAsync returns BadRequest when loggingLevel is negative.', expectedResult: "Response status is 400 BadRequest with message 'LoggingLevel must be a non-negative integer.'.", id: '4', preconditions: 'None.', priority: 'High', …}
+4
+: 
+{description: "Verify that GenerateReapplyFileAsync successfully generates reapply file when callMode is 'U'.", expectedResult: "Response status is 200 OK with message 'Reapply file generated successfully.'.", id: '5', preconditions: 'StatsProcessingService and dependencies are properly initialized.', priority: 'High', …}
+5
+: 
+{description: "Verify that GenerateReapplyFileAsync returns BadRequest when callMode is not 'U'.", expectedResult: "Response status is 400 BadRequest with message 'Re…eneration is only allowed in Update mode ('U').'.", id: '6', preconditions: 'None.', priority: 'High', …}
+6
+: 
+{description: 'Verify that GetDisplayStatisticsAsync returns the list of statistics details.', expectedResult: 'Response status is 200 OK with an array of statist…tail objects containing Header and Detail fields.', id: '7', preconditions: 'StatsRepository contains statistics detail records.', priority: 'High', …}
+7
+: 
+{description: 'Verify that audit and DIN files are processed corr…PinCount, LinCount, ErroredRecords) are accurate.', expectedResult: 'Counts in the result match the expected values based on input records.', id: '8', preconditions: 'AuditRepository and DinInputRepository contain a mix of processed, errored, and valid records.', priority: 'High', …}
+8
+: 
+{description: 'Verify that ProcessAuditAndDinFilesAsync throws ArgumentException when callMode is invalid.', expectedResult: 'ArgumentException is thrown with message indicating invalid call mode.', id: '9', preconditions: 'None.', priority: 'High', …}
+9
+: 
+{description: 'Verify that ProcessAuditAndDinFilesAsync throws ArgumentException when loggingLevel is negative.', expectedResult: 'ArgumentException is thrown with message indicating logging level must be non-negative.', id: '10', preconditions: 'None.', priority: 'High', …}
+10
+: 
+{description: 'Verify that GenerateReapplyFileAsync throws ArgumentException when callMode is invalid.', expectedResult: 'ArgumentException is thrown with message indicating invalid call mode.', id: '11', preconditions: 'None.', priority: 'High', …}
+11
+: 
+{description: "Verify that GenerateReapplyFileAsync throws InvalidOperationException when callMode is 'R'.", expectedResult: "InvalidOperationException is thrown with message '…file generation is only allowed in Update mode.'.", id: '12', preconditions: 'None.', priority: 'High', …}
+12
+: 
+{description: "Verify that reapply records are added to repository only when callMode is 'U'.", expectedResult: 'Reapply records are added only in Update mode.', id: '13', preconditions: 'DinInputRepository contains DIN records; ReapplyRepository is empty.', priority: 'Medium', …}
+13
+: 
+{description: 'Verify that TerminateAsync updates the main stats record and adds detailed stats records correctly.', expectedResult: 'Stats record is updated and detailed stats are added.', id: '14', preconditions: 'StatsRepository contains or does not contain a stats record.', priority: 'Medium', …}
+14
+: 
+{description: 'Verify that IsErrorRecord returns true when AuditRecord.ProcessStg indicates error.', expectedResult: 'Returns true for error record, false otherwise.', id: '15', preconditions: 'Create AuditRecord with ProcessStg set to error character.', priority: 'Low', …}
+15
+: 
+{description: 'Verify that IsProcessedRecord returns true when AuditRecord.ProcessStg indicates processed.', expectedResult: 'Returns true for processed record, false otherwise.', id: '16', preconditions: 'Create AuditRecord with ProcessStg set to processed character.', priority: 'Low', …}
+16
+: 
+{description: 'Verify complete user journey of processing inputs and generating reapply file in Update mode.', expectedResult: 'All steps succeed with correct data and statistics updated.', id: '17', preconditions: 'Valid audit and DIN files exist; system initialized.', priority: 'High', …}
+17
+: 
+{description: 'Verify user journey of processing inputs in Read mode and rejection of reapply file generation.', expectedResult: 'Processing succeeds; reapply generation rejected; statistics updated.', id: '18', preconditions: 'Valid audit and DIN files exist; system initialized.', priority: 'High', …}
+length
+: 
+18
+
+Functional tests are coming from backend perfectly but not getting displayed in frontend can you check issue
+import { useState, useEffect, useRef, useMemo } from "react";
+import mermaid from "mermaid";
+import {
+  FileCode,
+  FileSearch,
+  Copy,
+  Download,
+  ClipboardList,
+  RefreshCw,
+  CheckCircle,
+  Folder,
+  FolderOpen,
+  FileText,
+  ChevronRight,
+  ChevronDown,
+  FileArchive,
+} from "lucide-react";
+import JSZip from "jszip";
+import { saveAs } from "file-saver";
+
+// SidebarSkeleton component for the documentation tab
+const SidebarSkeleton = () => (
+  <div className="animate-pulse">
+    <div className="h-6 bg-gray-200 rounded mb-4 w-3/4"></div>
+    <div className="space-y-3">
+      {[1, 2, 3, 4, 5, 6].map((item) => (
+        <div key={item} className="flex items-center space-x-2">
+          <div className="w-4 h-4 bg-gray-200 rounded"></div>
+          <div className="h-4 bg-gray-200 rounded flex-1"></div>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+// Initialize Mermaid with configuration
+mermaid.initialize({
+  startOnLoad: false,
+  theme: "default",
+  securityLevel: "loose",
+  flowchart: {
+    useMaxWidth: true,
+    htmlLabels: true,
+  },
+});
+
+function formatAssessmentAsMarkdown(assessment) {
+  if (!assessment || typeof assessment !== "object") return "";
+
+  const intro = assessment["Introduction"] || {};
+  const scope = assessment["Scope and Assumptions"] || {};
+  const arch = assessment["System Architecture"] || {};
+  const func = assessment["Functional Description"] || {};
+  const logic = assessment["Program Logic and Flow"] || {};
+  const io = assessment["Input and Output Specifications"] || {};
+  const security = assessment["Security Analysis"] || {};
+  const performance = assessment["Performance Analysis"] || {};
+  const summary = assessment["Summary"] || {};
+
+  // Helper function to render content from the new structure
+  const renderContent = (content) => {
+    if (!content) return "Not provided";
+    if (typeof content === "string") {
+      if (content.includes("###") || content.includes("```")) {
+        return content;
+      }
+      return content;
+    }
+    if (Array.isArray(content))
+      return content.map((item) => `- ${item}`).join("\n");
+    if (typeof content === "object") {
+      return Object.entries(content)
+        .map(([key, value]) => `**${key}**: ${value}`)
+        .join("\n");
+    }
+    return String(content);
+  };
+
+  let md = "# Program Documentation\n\n";
+
+  if (intro["Purpose of the Document"] || intro["Program Overview"]) {
+    md += "## 1. Introduction\n\n";
+    if (intro["Purpose of the Document"]) {
+      md += `${renderContent(intro["Purpose of the Document"])}\n\n`;
+    }
+    if (intro["Program Overview"]) {
+      md += `${renderContent(intro["Program Overview"])}\n\n`;
+    }
+  }
+
+  if (scope["Scope"] || scope["Assumptions"]) {
+    md += "---\n\n## 2. Scope and Assumptions\n\n";
+    if (scope["Scope"]) {
+      md += `${renderContent(scope["Scope"])}\n\n`;
+    }
+    if (scope["Assumptions"]) {
+      md += `${renderContent(scope["Assumptions"])}\n\n`;
+    }
+  }
+
+  if (Object.keys(arch).length > 0) {
+    md += "---\n\n## 3. System Architecture\n\n";
+    if (arch["High-Level Design"]) {
+      md += `${renderContent(arch["High-Level Design"])}\n\n`;
+    }
+    if (arch["Mermaid Diagram"]) {
+      md += `${renderContent(arch["Mermaid Diagram"])}\n\n`;
+    }
+    if (arch["Environment and Platform Details"]) {
+      md += `${renderContent(arch["Environment and Platform Details"])}\n\n`;
+    }
+    if (arch["Dependencies"]) {
+      md += `${renderContent(arch["Dependencies"])}\n\n`;
+    }
+    if (arch["Data Sources and Storage"]) {
+      md += `${renderContent(arch["Data Sources and Storage"])}\n\n`;
+    }
+  }
+
+  if (Object.keys(func).length > 0) {
+    md += "---\n\n## 4. Functional Description\n\n";
+    if (func["Business Requirements"]) {
+      md += `${renderContent(func["Business Requirements"])}\n\n`;
+    }
+    if (func["Main Processes"]) {
+      md += `${renderContent(func["Main Processes"])}\n\n`;
+    }
+    if (func["Modules and Subroutines"]) {
+      md += `${renderContent(func["Modules and Subroutines"])}\n\n`;
+    }
+    if (func["User Interfaces"]) {
+      md += `${renderContent(func["User Interfaces"])}\n\n`;
+    }
+  }
+
+  if (Object.keys(logic).length > 0) {
+    md += "---\n\n## 5. Program Logic and Flow\n\n";
+    if (logic["Control Flow"]) {
+      md += `${renderContent(logic["Control Flow"])}\n\n`;
+    }
+    if (logic["Mermaid Flowchart"]) {
+      md += `${renderContent(logic["Mermaid Flowchart"])}\n\n`;
+    }
+    if (logic["Rules, Logic, Validations"]) {
+      md += `${renderContent(logic["Rules, Logic, Validations"])}\n\n`;
+    }
+    if (logic["Data Transformations"]) {
+      md += `${renderContent(logic["Data Transformations"])}\n\n`;
+    }
+  }
+
+  if (Object.keys(io).length > 0) {
+    md += "---\n\n## 6. Input and Output Specifications\n\n";
+    if (io["Inputs"]) {
+      md += `${renderContent(io["Inputs"])}\n\n`;
+    }
+    if (io["Outputs"]) {
+      md += `${renderContent(io["Outputs"])}\n\n`;
+    }
+  }
+
+  if (Object.keys(security).length > 0) {
+    md += "---\n\n## 7. Security Analysis\n\n";
+    if (security["Security Considerations"]) {
+      md += `${renderContent(security["Security Considerations"])}\n\n`;
+    }
+    if (security["Vulnerability Assessment"]) {
+      md += `${renderContent(security["Vulnerability Assessment"])}\n\n`;
+    }
+    if (security["Security Recommendations"]) {
+      md += `${renderContent(security["Security Recommendations"])}\n\n`;
+    }
+  }
+
+  if (Object.keys(performance).length > 0) {
+    md += "---\n\n## 8. Performance Analysis\n\n";
+    if (performance["Performance Characteristics"]) {
+      md += `${renderContent(performance["Performance Characteristics"])}\n\n`;
+    }
+    if (performance["Scalability Considerations"]) {
+      md += `${renderContent(performance["Scalability Considerations"])}\n\n`;
+    }
+    if (performance["Optimization Opportunities"]) {
+      md += `${renderContent(performance["Optimization Opportunities"])}\n\n`;
+    }
+  }
+
+  if (Object.keys(summary).length > 0) {
+    md += "---\n\n## Summary\n\n";
+    if (summary["High-level Recap"]) {
+      md += `${renderContent(summary["High-level Recap"])}\n\n`;
+    }
+    if (summary["Recommendations"]) {
+      md += `${renderContent(summary["Recommendations"])}\n\n`;
+    }
+  }
+
+  return md;
+}
+
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function simpleMarkdownToHtml(markdown) {
+  if (!markdown || typeof markdown !== "string") return "";
+
+  // Define section ID mapping based on documentStructure
+  const sectionIdMap = {
+    "1. Introduction": "introduction",
+    "1.1 Purpose of the Document": "purpose",
+    "1.2 Program Overview": "overview",
+    "2. Scope and Assumptions": "scope",
+    "2.1 Scope": "scope-detail",
+    "2.2 Assumptions": "assumptions",
+    "3. System Architecture": "architecture",
+    "3.1 High-Level Design": "high-level",
+    "3.2 Mermaid Diagram": "mermaid",
+    "3.3 Environment and Platform Details": "environment",
+    "3.4 Dependencies": "dependencies",
+    "3.5 Data Sources and Storage": "data-sources",
+    "4. Functional Description": "functional",
+    "4.1 Business Requirements": "business-req",
+    "4.2 Main Processes": "main-processes",
+    "4.3 Modules and Subroutines": "modules",
+    "4.4 User Interfaces": "user-interfaces",
+    "5. Program Logic and Flow": "logic",
+    "5.1 Control Flow": "control-flow",
+    "5.2 Mermaid Flowchart": "flowchart",
+    "5.3 Rules, Logic, Validations": "rules",
+    "5.4 Data Transformations": "transformations",
+    "6. Input and Output Specifications": "io",
+    "6.1 Inputs": "inputs",
+    "6.2 Outputs": "outputs",
+    "7. Security Analysis": "security",
+    "7.1 Security Considerations": "security-considerations",
+    "7.2 Vulnerability Assessment": "vulnerability",
+    "7.3 Security Recommendations": "security-recommendations",
+    "8. Performance Analysis": "performance",
+    "8.1 Performance Characteristics": "performance-char",
+    "8.2 Scalability Considerations": "scalability",
+    "8.3 Optimization Opportunities": "optimization",
+    "9. Summary": "summary",
+    "9.1 High-level Recap": "recap",
+    "9.2 Recommendations": "recommendations",
+  };
+
+  const lines = markdown.split(/\r?\n/);
+  const html = [];
+  let inCode = false;
+  let codeLang = "";
+  let listOpen = false;
+  let inMermaid = false;
+  let mermaidCode = [];
+
+  const closeListIfOpen = () => {
+    if (listOpen) {
+      html.push("</ul>");
+      listOpen = false;
+    }
+  };
+
+  for (let raw of lines) {
+    let line = raw;
+
+    // Handle code blocks
+    const codeFence = line.match(/^```(.*)$/);
+    if (codeFence) {
+      if (!inCode) {
+        closeListIfOpen();
+        inCode = true;
+        codeLang = (codeFence[1] || "").trim();
+        if (codeLang.toLowerCase() === "mermaid") {
+          inMermaid = true;
+          mermaidCode = [];
+        } else {
+          const cls = codeLang
+            ? ` class="language-${escapeHtml(codeLang)}"`
+            : "";
+          html.push(`<pre><code${cls}>`);
+        }
+      } else {
+        if (inMermaid) {
+          html.push(`<div class="mermaid">${mermaidCode.join("\n")}</div>`);
+          inMermaid = false;
+          mermaidCode = [];
+        } else {
+          html.push(`</code></pre>`);
+        }
+        inCode = false;
+        codeLang = "";
+      }
+      continue;
+    }
+
+    if (inCode) {
+      if (inMermaid) {
+        mermaidCode.push(line);
+      } else {
+        html.push(escapeHtml(line));
+      }
+      continue;
+    }
+
+    // Handle headers
+    if (/^#\s+/.test(line)) {
+      closeListIfOpen();
+      const headerText = line.replace(/^#\s+/, "");
+      const id =
+        sectionIdMap[headerText] ||
+        headerText.toLowerCase().replace(/\s+/g, "-");
+      html.push(
+        `<h1 id="${id}" class="text-2xl font-bold mt-4 mb-2">${escapeHtml(
+          headerText
+        )}</h1>`
+      );
+      continue;
+    }
+    if (/^##\s+/.test(line)) {
+      closeListIfOpen();
+      const headerText = line.replace(/^##\s+/, "");
+      const id =
+        sectionIdMap[headerText] ||
+        headerText.toLowerCase().replace(/\s+/g, "-");
+      html.push(
+        `<h2 id="${id}" class="text-xl font-semibold mt-3 mb-2">${escapeHtml(
+          headerText
+        )}</h2>`
+      );
+      continue;
+    }
+    if (/^###\s+/.test(line)) {
+      closeListIfOpen();
+      const headerText = line.replace(/^###\s+/, "");
+      const id =
+        sectionIdMap[headerText] ||
+        headerText.toLowerCase().replace(/\s+/g, "-");
+      html.push(
+        `<h3 id="${id}" class="text-lg font-medium mt-2 mb-1">${escapeHtml(
+          headerText
+        )}</h3>`
+      );
+      continue;
+    }
+
+    // Handle lists
+    if (/^\s*[-*]\s+/.test(line)) {
+      if (!listOpen) {
+        html.push('<ul class="list-disc pl-5">');
+        listOpen = true;
+      }
+      const listItem = line.replace(/^\s*[-*]\s+/, "");
+      const formattedItem = listItem.replace(
+        /\*\*(.*?)\*\*/g,
+        "<strong>$1</strong>"
+      );
+      html.push(`<li>${formattedItem}</li>`);
+      continue;
+    }
+
+    // Handle horizontal rules
+    if (/^---\s*$/.test(line.trim())) {
+      closeListIfOpen();
+      html.push('<hr class="my-4 border-gray-300" />');
+      continue;
+    }
+
+    // Handle empty lines
+    if (line.trim() === "") {
+      closeListIfOpen();
+      html.push("");
+      continue;
+    }
+
+    // Handle paragraphs with bold text
+    const formattedLine = line.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+    closeListIfOpen();
+    html.push(`<p class="mb-2">${formattedLine}</p>`);
+  }
+
+  closeListIfOpen();
+  return html.join("\n");
+}
+
+export default function Output({
+  convertedCode,
+  unitTests,
+  functionalTests,
+  activeOutputTab,
+  setActiveOutputTab,
+  copyStatus,
+  setActiveTab,
+  handleReset,
+  targetLanguage,
+  convertedFiles,
+  documentationJson,
+}) {
+  const [fileStructure, setFileStructure] = useState({});
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedFileContent, setSelectedFileContent] = useState("");
+  const [expandedFolders, setExpandedFolders] = useState({});
+  const [isGeneratingZip, setIsGeneratingZip] = useState(false);
+  const [localCopyStatus, setLocalCopyStatus] = useState(false);
+  const [selectedSection, setSelectedSection] = useState(null);
+
+  const codeContentRef = useRef(null);
+  const functionalTestsContentRef = useRef(null);
+  const documentationContentRef = useRef(null);
+
+  useEffect(() => {
+    console.log("documentationJson received:", documentationJson);
+    if (documentationJson) {
+      console.log("documentationJson keys:", Object.keys(documentationJson));
+      console.log(
+        "documentationJson structure:",
+        JSON.stringify(documentationJson, null, 2)
+      );
+    }
+  }, [documentationJson]);
+
+  useEffect(() => {
+    if (convertedFiles && Object.keys(convertedFiles).length > 0) {
+      const structure = {
+        files: convertedFiles,
+      };
+      setFileStructure(structure);
+      const firstFilePath = Object.keys(convertedFiles)[0];
+      setSelectedFile(firstFilePath);
+      setSelectedFileContent(convertedFiles[firstFilePath]);
+    } else {
+      setFileStructure({ files: {} });
+      setSelectedFile(null);
+      setSelectedFileContent("");
+    }
+  }, [convertedFiles]);
+
+  useEffect(() => {
+    setLocalCopyStatus(copyStatus);
+  }, [copyStatus]);
+
+  const documentationMarkdown = useMemo(() => {
+    try {
+      if (!documentationJson) {
+        console.log("No documentationJson available");
+        return "";
+      }
+
+      console.log(
+        "Formatting documentation from JSON:",
+        Object.keys(documentationJson)
+      );
+      const result = formatAssessmentAsMarkdown(documentationJson);
+      console.log("Formatted markdown length:", result.length);
+      return result;
+    } catch (error) {
+      console.error("Error formatting documentation:", error);
+      return "";
+    }
+  }, [documentationJson]);
+
+  const documentationHtml = useMemo(() => {
+    if (!documentationMarkdown) {
+      console.log("No documentationMarkdown available for HTML conversion");
+      return "";
+    }
+    console.log(
+      "Converting markdown to HTML, markdown length:",
+      documentationMarkdown.length
+    );
+    const result = simpleMarkdownToHtml(documentationMarkdown);
+    console.log("HTML conversion result length:", result.length);
+    return result;
+  }, [documentationMarkdown]);
+
+  const enhancedCopyCode = () => {
+    let contentToCopy = "";
+    let contentElement = null;
+
+    if (activeOutputTab === "code") {
+      contentToCopy = selectedFileContent;
+      contentElement = codeContentRef.current;
+    } else if (activeOutputTab === "functional-tests") {
+      contentToCopy = functionalTests;
+      contentElement = functionalTestsContentRef.current;
+    } else if (activeOutputTab === "documentation") {
+      contentToCopy = documentationMarkdown;
+      contentElement = documentationContentRef.current;
+    }
+
+    if (contentToCopy && contentElement) {
+      try {
+        navigator.clipboard
+          .writeText(contentToCopy)
+          .then(() => {
+            setLocalCopyStatus(true);
+            setTimeout(() => {
+              setLocalCopyStatus(false);
+            }, 3000);
+          })
+          .catch((err) => {
+            console.error("Failed to copy: ", err);
+          });
+      } catch (err) {
+        console.error("Copy failed: ", err);
+      }
+    }
+  };
+
+  const selectAllContent = () => {
+    let contentElement = null;
+
+    if (activeOutputTab === "code") {
+      contentElement = codeContentRef.current;
+    } else if (activeOutputTab === "functional-tests") {
+      contentElement = functionalTestsContentRef.current;
+    } else if (activeOutputTab === "documentation") {
+      contentElement = documentationContentRef.current;
+    }
+
+    if (contentElement) {
+      if (window.getSelection) {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(contentElement);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    }
+  };
+
+  const toggleFolder = (path) => {
+    setExpandedFolders((prev) => ({
+      ...prev,
+      [path]: !prev[path],
+    }));
+  };
+
+  const selectFile = (path) => {
+    setSelectedFile(path);
+    setSelectedFileContent(fileStructure.files[path]);
+  };
+
+  const renderFileTree = (structure, path = "", level = 0) => {
+    if (!structure || !structure.files) return null;
+
+    const files = structure.files || {};
+    const filePaths = Object.keys(files);
+
+    const filesByFolder = {};
+
+    filePaths.forEach((filePath) => {
+      const parts = filePath.split(/[\\/]/);
+      let currentPath = "";
+
+      for (let i = 0; i < parts.length - 1; i++) {
+        const part = parts[i];
+        const parentPath = currentPath;
+        currentPath = currentPath ? `${currentPath}/${part}` : part;
+
+        if (!filesByFolder[currentPath]) {
+          filesByFolder[currentPath] = {
+            name: part,
+            isFolder: true,
+            parent: parentPath,
+            children: [],
+          };
+        } else if (
+          filesByFolder[currentPath] &&
+          !filesByFolder[currentPath].children
+        ) {
+          filesByFolder[currentPath].children = [];
+        }
+
+        if (
+          parentPath &&
+          filesByFolder[parentPath] &&
+          filesByFolder[parentPath].children
+        ) {
+          if (!filesByFolder[parentPath].children.includes(currentPath)) {
+            filesByFolder[parentPath].children.push(currentPath);
+          }
+        }
+      }
+
+      const fileName = parts[parts.length - 1];
+      const parentFolder = parts.slice(0, -1).join("/");
+
+      if (
+        parentFolder &&
+        filesByFolder[parentFolder] &&
+        filesByFolder[parentFolder].children
+      ) {
+        if (!filesByFolder[parentFolder].children.includes(filePath)) {
+          filesByFolder[parentFolder].children.push(filePath);
+        }
+      }
+
+      filesByFolder[filePath] = {
+        name: fileName,
+        isFolder: false,
+        parent: parentFolder,
+        content: files[filePath],
+      };
+    });
+
+    let rootFolders = Object.entries(filesByFolder)
+      .filter(([path, item]) => !item.parent && item.isFolder)
+      .map(([path, item]) => path);
+
+    let rootFiles = Object.entries(filesByFolder)
+      .filter(([path, item]) => !item.isFolder && !item.parent)
+      .map(([path, item]) => path);
+
+    return (
+      <div className="file-tree ps-2">
+        {rootFolders.map((folderPath) => {
+          const folder = filesByFolder[folderPath];
+          return folder
+            ? renderFileTreeItem(folderPath, folder, filesByFolder)
+            : null;
+        })}
+        {rootFiles.map((filePath) => {
+          const file = filesByFolder[filePath];
+          return file
+            ? renderFileTreeItem(filePath, file, filesByFolder)
+            : null;
+        })}
+      </div>
+    );
+  };
+
+  const renderFileTreeItem = (path, item, filesByFolder) => {
+    if (!item) return null;
+
+    const isExpanded = expandedFolders[path];
+    const paddingLeft = path.split("/").length * 10;
+
+    if (item.isFolder) {
+      return (
+        <div key={path} className="folder">
+          <div
+            className={`d-flex align-items-center py-1 px-2 rounded cursor-pointer ${
+              expandedFolders[path] ? "fw-semibold" : ""
+            }`}
+            style={{ paddingLeft: `${paddingLeft}px` }}
+            onClick={() => toggleFolder(path)}
+          >
+            {isExpanded ? (
+              <ChevronDown size={16} className="text-secondary me-1" />
+            ) : (
+              <ChevronRight size={16} className="text-secondary me-1" />
+            )}
+            {isExpanded ? (
+              <FolderOpen size={16} className="text-warning me-2" />
+            ) : (
+              <Folder size={16} className="text-warning me-2" />
+            )}
+            <span className="text-truncate">{item.name}</span>
+          </div>
+
+          {isExpanded && item.children && Array.isArray(item.children) && (
+            <div className="ps-4">
+              {item.children
+                .sort((a, b) => {
+                  const aItem = filesByFolder[a];
+                  const bItem = filesByFolder[b];
+                  if (aItem.isFolder && !bItem.isFolder) return -1;
+                  if (!aItem.isFolder && bItem.isFolder) return 1;
+                  return aItem.name.localeCompare(bItem.name);
+                })
+                .map((childPath) => {
+                  return renderFileTreeItem(
+                    childPath,
+                    filesByFolder[childPath],
+                    filesByFolder
+                  );
+                })}
+            </div>
+          )}
+        </div>
+      );
+    } else {
+      return (
+        <div
+          key={path}
+          className={`d-flex align-items-center py-1 px-2 rounded cursor-pointer ${
+            selectedFile === path ? "bg-primary text-white" : ""
+          }`}
+          style={{ paddingLeft: `${paddingLeft + 20}px` }}
+          onClick={() => selectFile(path)}
+        >
+          <FileText size={16} className="me-2" />
+          <span className="text-truncate">{item.name}</span>
+        </div>
+      );
+    }
+  };
+
+  const renderDocumentationSidebar = () => {
+    if (!documentationJson || Object.keys(documentationJson).length === 0) {
+      return (
+        <div className="p-4">
+          <SidebarSkeleton />
+        </div>
+      );
+    }
+
+    const documentStructure = [
+      {
+        id: "introduction",
+        number: "1",
+        title: "Introduction",
+        subsections: [
+          {
+            id: "purpose",
+            number: "1.1",
+            title: "Purpose of the Document",
+            key: "Purpose of the Document",
+          },
+          {
+            id: "overview",
+            number: "1.2",
+            title: "Program Overview",
+            key: "Program Overview",
+          },
+        ],
+      },
+      {
+        id: "scope",
+        number: "2",
+        title: "Scope and Assumptions",
+        subsections: [
+          { id: "scope-detail", number: "2.1", title: "Scope", key: "Scope" },
+          {
+            id: "assumptions",
+            number: "2.2",
+            title: "Assumptions",
+            key: "Assumptions",
+          },
+        ],
+      },
+      {
+        id: "architecture",
+        number: "3",
+        title: "System Architecture",
+        subsections: [
+          {
+            id: "high-level",
+            number: "3.1",
+            title: "High-Level Design",
+            key: "High-Level Design",
+          },
+          {
+            id: "mermaid",
+            number: "3.2",
+            title: "Mermaid Diagram",
+            key: "Mermaid Diagram",
+          },
+          {
+            id: "environment",
+            number: "3.3",
+            title: "Environment and Platform Details",
+            key: "Environment and Platform Details",
+          },
+          {
+            id: "dependencies",
+            number: "3.4",
+            title: "Dependencies",
+            key: "Dependencies",
+          },
+          {
+            id: "data-sources",
+            number: "3.5",
+            title: "Data Sources and Storage",
+            key: "Data Sources and Storage",
+          },
+        ],
+      },
+      {
+        id: "functional",
+        number: "4",
+        title: "Functional Description",
+        subsections: [
+          {
+            id: "business-req",
+            number: "4.1",
+            title: "Business Requirements",
+            key: "Business Requirements",
+          },
+          {
+            id: "main-processes",
+            number: "4.2",
+            title: "Main Processes",
+            key: "Main Processes",
+          },
+          {
+            id: "modules",
+            number: "4.3",
+            title: "Modules and Subroutines",
+            key: "Modules and Subroutines",
+          },
+          {
+            id: "user-interfaces",
+            number: "4.4",
+            title: "User Interfaces",
+            key: "User Interfaces",
+          },
+        ],
+      },
+      {
+        id: "logic",
+        number: "5",
+        title: "Program Logic and Flow",
+        subsections: [
+          {
+            id: "control-flow",
+            number: "5.1",
+            title: "Control Flow",
+            key: "Control Flow",
+          },
+          {
+            id: "flowchart",
+            number: "5.2",
+            title: "Mermaid Flowchart",
+            key: "Mermaid Flowchart",
+          },
+          {
+            id: "rules",
+            number: "5.3",
+            title: "Rules, Logic, Validations",
+            key: "Rules, Logic, Validations",
+          },
+          {
+            id: "transformations",
+            number: "5.4",
+            title: "Data Transformations",
+            key: "Data Transformations",
+          },
+        ],
+      },
+      {
+        id: "io",
+        number: "6",
+        title: "Input and Output Specifications",
+        subsections: [
+          { id: "inputs", number: "6.1", title: "Inputs", key: "Inputs" },
+          { id: "outputs", number: "6.2", title: "Outputs", key: "Outputs" },
+        ],
+      },
+      {
+        id: "security",
+        number: "7",
+        title: "Security Analysis",
+        subsections: [
+          {
+            id: "security-considerations",
+            number: "7.1",
+            title: "Security Considerations",
+            key: "Security Considerations",
+          },
+          {
+            id: "vulnerability",
+            number: "7.2",
+            title: "Vulnerability Assessment",
+            key: "Vulnerability Assessment",
+          },
+          {
+            id: "security-recommendations",
+            number: "7.3",
+            title: "Security Recommendations",
+            key: "Security Recommendations",
+          },
+        ],
+      },
+      {
+        id: "performance",
+        number: "8",
+        title: "Performance Analysis",
+        subsections: [
+          {
+            id: "performance-char",
+            number: "8.1",
+            title: "Performance Characteristics",
+            key: "Performance Characteristics",
+          },
+          {
+            id: "scalability",
+            number: "8.2",
+            title: "Scalability Considerations",
+            key: "Scalability Considerations",
+          },
+          {
+            id: "optimization",
+            number: "8.3",
+            title: "Optimization Opportunities",
+            key: "Optimization Opportunities",
+          },
+        ],
+      },
+      {
+        id: "summary",
+        number: "9",
+        title: "Summary",
+        subsections: [
+          {
+            id: "recap",
+            number: "9.1",
+            title: "High-level Recap",
+            key: "High-level Recap",
+          },
+          {
+            id: "recommendations",
+            number: "9.2",
+            title: "Recommendations",
+            key: "Recommendations",
+          },
+        ],
+      },
+    ];
+
+    const scrollToSection = (sectionId) => {
+      setSelectedSection(sectionId);
+      const element = document.getElementById(sectionId);
+      if (element) {
+        element.scrollIntoView({ behavior: "smooth", block: "start" });
+      } else {
+        console.warn(`Element with ID ${sectionId} not found`);
+      }
+    };
+
+    return (
+      <div className="file-tree ps-2 py-2">
+        {documentStructure.map((section) => {
+          const sectionData = documentationJson[section.title];
+          if (!sectionData || Object.keys(sectionData).length === 0)
+            return null;
+
+          const isExpanded = expandedFolders[section.id];
+
+          return (
+            <div key={section.id} className="mb-2">
+              <div
+                className={`d-flex align-items-center py-1 px-2 rounded cursor-pointer ${
+                  selectedSection === section.id
+                    ? "bg-primary text-white"
+                    : "hover:bg-gray-100"
+                }`}
+                style={{ paddingLeft: "10px" }}
+                onClick={() => {
+                  toggleFolder(section.id);
+                  scrollToSection(section.id);
+                }}
+              >
+                {isExpanded ? (
+                  <ChevronDown size={14} className="me-1" />
+                ) : (
+                  <ChevronRight size={14} className="me-1" />
+                )}
+                <span
+                  className="text-truncate fw-semibold"
+                  style={{ fontSize: "0.9rem" }}
+                >
+                  {section.number}. {section.title}
+                </span>
+              </div>
+
+              {isExpanded && (
+                <div className="ps-3">
+                  {section.subsections.map((subsection) => {
+                    if (!sectionData[subsection.key]) return null;
+
+                    return (
+                      <div
+                        key={subsection.id}
+                        className={`d-flex align-items-center py-1 px-2 rounded cursor-pointer ${
+                          selectedSection === subsection.id
+                            ? "bg-primary text-white"
+                            : "hover:bg-gray-100"
+                        }`}
+                        style={{ paddingLeft: "20px" }}
+                        onClick={() => scrollToSection(subsection.id)}
+                      >
+                        <span
+                          className="text-truncate"
+                          style={{ fontSize: "0.85rem" }}
+                        >
+                          {subsection.number} {subsection.title}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  async function handleDownloadZip() {
+    setIsGeneratingZip(true);
+
+    try {
+      const zip = new JSZip();
+
+      const files = fileStructure.files || {};
+      Object.entries(files).forEach(([path, content]) => {
+        zip.file(path, content);
+      });
+
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      saveAs(zipBlob, "converted-project.zip");
+    } catch (error) {
+      console.error("Error generating zip file:", error);
+    } finally {
+      setIsGeneratingZip(false);
+    }
+  }
+
+  function handleDownloadDocumentation() {
+    try {
+      const content = documentationMarkdown || "";
+      const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+      saveAs(blob, "program-documentation.md");
+    } catch (error) {
+      console.error("Error generating documentation file:", error);
+    }
+  }
+
+  const handleDoubleClick = (e) => {
+    selectAllContent();
+  };
+
+  useEffect(() => {
+    const renderMermaid = async () => {
+      try {
+        await mermaid.run({
+          querySelector: ".mermaid",
+          postRenderCallback: (id) => {
+            console.log(`Mermaid diagram ${id} rendered`);
+          },
+        });
+      } catch (e) {
+        console.warn("Mermaid render failed:", e);
+      }
+    };
+
+    if (activeOutputTab === "documentation" && documentationHtml) {
+      setTimeout(renderMermaid, 100);
+    }
+  }, [documentationHtml, activeOutputTab]);
+
+  return (
+    <div className="mb-4">
+      <div className="d-flex align-items-center justify-content-between mb-3">
+        <div className="d-flex align-items-center gap-2">
+          <button
+            className={`px-4 py-2 rounded-3 ${
+              activeOutputTab === "code"
+                ? "text-white"
+                : "bg-white text-dark border border-dark"
+            }`}
+            style={{
+              backgroundColor: activeOutputTab === "code" ? "#0d9488" : "",
+            }}
+            onClick={() => setActiveOutputTab("code")}
+          >
+            <div className="d-flex align-items-center">
+              <FileCode size={16} className="me-2" />
+              Converted Code
+            </div>
+          </button>
+          <button
+            className={`px-4 py-2 rounded-3 ${
+              activeOutputTab === "functional-tests"
+                ? "text-white"
+                : "bg-white text-dark border border-dark"
+            }`}
+            style={{
+              backgroundColor:
+                activeOutputTab === "functional-tests" ? "#0d9488" : "",
+            }}
+            onClick={() => setActiveOutputTab("functional-tests")}
+          >
+            <div className="d-flex align-items-center">
+              <FileSearch size={16} className="me-2" />
+              Functional Tests
+            </div>
+          </button>
+          <button
+            className={`px-4 py-2 rounded-3 ${
+              activeOutputTab === "documentation"
+                ? "text-white"
+                : "bg-white text-dark border border-dark"
+            }`}
+            style={{
+              backgroundColor:
+                activeOutputTab === "documentation" ? "#0d9488" : "",
+            }}
+            onClick={() => setActiveOutputTab("documentation")}
+          >
+            <div className="d-flex align-items-center">
+              <FileText size={16} className="me-2" />
+              Documentation
+            </div>
+          </button>
+        </div>
+
+        <div className="d-flex justify-content-end gap-2">
+          <button
+            className={`d-flex align-items-center bg-secondary text-white rounded px-3 py-2 border border-white ${
+              !documentationMarkdown ? "opacity-50" : ""
+            }`}
+            disabled={!documentationMarkdown}
+            onClick={handleDownloadDocumentation}
+          >
+            <FileText size={16} className="me-1 text-white" />
+            <span>Download Documentation</span>
+          </button>
+
+          <button
+            className={`d-flex align-items-center bg-secondary text-white rounded px-3 py-2 border border-white ${
+              !convertedCode || isGeneratingZip ? "opacity-50" : ""
+            }`}
+            disabled={!convertedCode || isGeneratingZip}
+            onClick={handleDownloadZip}
+          >
+            <FileArchive size={16} className="me-1 text-white" />
+            <span>{isGeneratingZip ? "Generating..." : "Download ZIP"}</span>
+          </button>
+        </div>
+      </div>
+
+      {activeOutputTab === "code" ? (
+        <div
+          className="bg-white rounded-3 border border-dark shadow overflow-hidden"
+          style={{ height: "500px" }}
+        >
+          <div className="d-flex align-items-center bg-light px-4 py-2 border-bottom">
+            <span className="text-dark fw-medium">
+              {`${targetLanguage} Project Structure`}
+            </span>
+          </div>
+          <div className="d-flex" style={{ height: "calc(100% - 43px)" }}>
+            <div
+              className="w-25 border-end bg-light"
+              style={{ height: "100%", overflowY: "auto" }}
+            >
+              {renderFileTree(fileStructure)}
+            </div>
+
+            <div className="w-75" style={{ height: "100%" }}>
+              {selectedFile ? (
+                <div className="h-100 d-flex flex-column">
+                  <div className="bg-light px-4 py-2 fs-6 font-monospace border-bottom d-flex justify-content-between align-items-center">
+                    <span>{selectedFile}</span>
+                  </div>
+                  <div
+                    className="overflow-auto flex-grow-1"
+                    onDoubleClick={handleDoubleClick}
+                    ref={codeContentRef}
+                  >
+                    <div className="d-flex">
+                      <div
+                        className="pe-2 text-end text-secondary user-select-none font-monospace fs-6 border-end border-secondary me-2"
+                        style={{ minWidth: "32px" }}
+                      >
+                        {Array.from(
+                          {
+                            length: Math.max(
+                              selectedFileContent.split("\n").length,
+                              1
+                            ),
+                          },
+                          (_, i) => (
+                            <div key={i} style={{ height: "24px" }}>
+                              {i + 1}
+                            </div>
+                          )
+                        )}
+                      </div>
+                      <pre
+                        className="text-dark font-monospace fs-6 w-100"
+                        style={{ lineHeight: "1.5" }}
+                      >
+                        {selectedFileContent}
+                      </pre>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="d-flex align-items-center justify-content-center h-100 text-secondary">
+                  Select a file to view its content
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : activeOutputTab === "functional-tests" ? (
+        <div
+          className="bg-white rounded-3 border border-dark shadow overflow-hidden"
+          style={{ height: "500px" }}
+        >
+          <div className="d-flex align-items-center bg-light px-4 py-2 border-bottom">
+            <span className="text-dark fw-medium">Functional Test Cases</span>
+          </div>
+          <div
+            className="p-2 overflow-auto"
+            style={{ height: "calc(100% - 43px)" }}
+            onDoubleClick={handleDoubleClick}
+            ref={functionalTestsContentRef}
+          >
+            <div className="text-dark font-monospace fs-6 w-100">
+              {typeof functionalTests === "string" ? (
+                functionalTests.split("\n").map((line, index) => {
+                  if (line.trim().startsWith("# ")) {
+                    return (
+                      <h1
+                        key={index}
+                        className="fs-2 fw-bold text-dark mt-4 mb-2 border-bottom pb-1"
+                        style={{ borderColor: "#0d9488" }}
+                      >
+                        {line.replace("# ", "")}
+                      </h1>
+                    );
+                  }
+                  if (line.trim().startsWith("## ")) {
+                    return (
+                      <h4
+                        key={index}
+                        className="fs-4 fw-semibold text-dark mt-3 mb-2"
+                      >
+                        {line.replace("## ", "")}
+                      </h4>
+                    );
+                  }
+                  return <div key={index}>{line}</div>;
+                })
+              ) : (
+                <div>No functional tests available yet.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : activeOutputTab === "documentation" ? (
+        <div
+          className="bg-white rounded-3 border border-dark shadow overflow-hidden"
+          style={{ height: "500px" }}
+        >
+          <div className="d-flex align-items-center bg-light px-4 py-2 border-bottom">
+            <span className="text-dark fw-medium">Program Documentation</span>
+          </div>
+          <div className="d-flex" style={{ height: "calc(100% - 43px)" }}>
+            <div
+              className="w-25 border-end bg-light"
+              style={{ height: "100%", overflowY: "auto" }}
+            >
+              {renderDocumentationSidebar()}
+            </div>
+            <div
+              className="w-75 p-4 overflow-auto"
+              style={{ height: "calc(100% - 43px)" }}
+              onDoubleClick={handleDoubleClick}
+              ref={documentationContentRef}
+            >
+              {documentationHtml ? (
+                <div
+                  className="text-dark fs-6 w-100"
+                  style={{ lineHeight: "1.6" }}
+                  dangerouslySetInnerHTML={{ __html: documentationHtml }}
+                />
+              ) : documentationJson ? (
+                <div className="text-secondary">
+                  <p>
+                    Documentation is available but could not be formatted
+                    properly.
+                  </p>
+                  <p>Raw JSON structure:</p>
+                  <pre className="text-dark font-monospace fs-6 bg-light p-3 rounded">
+                    {JSON.stringify(documentationJson, null, 2)}
+                  </pre>
+                </div>
+              ) : (
+                <div className="text-secondary text-center mt-5">
+                  <FileText size={48} className="mb-3 opacity-50" />
+                  <p>No documentation available yet.</p>
+                  <p>
+                    Documentation will appear here once the analysis is
+                    complete.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="d-flex justify-content-center gap-5 mt-3">
+        <button
+          className="bg-white text-dark fw-medium px-4 py-2 rounded-3 border border-dark"
+          onClick={() => setActiveTab("requirements")}
+        >
+          <div className="d-flex align-items-center">
+            <ClipboardList
+              size={18}
+              className="me-2"
+              style={{ color: "#0d9488" }}
+            />
+            View Requirements
+          </div>
+        </button>
+        <button
+          className="bg-white text-dark fw-medium px-4 py-2 rounded-3 border border-dark"
+          onClick={handleReset}
+        >
+          <div className="d-flex align-items-center">
+            <RefreshCw size={18} className="me-2 text-danger" />
+            Start New Conversion
+          </div>
+        </button>
+      </div>
+    </div>
+  );
+}
