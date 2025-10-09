@@ -1,0 +1,77 @@
+functional_tests
+: 
+domainCoverage
+: 
+(8) ['Input processing with audit and DIN files', "Call mode validation and behavior (Update 'U' vs Read 'R')", 'Logging level validation', 'Reapply file generation constraints', 'Statistics record creation, update, and detailed statistics display', 'Error record detection and counting', 'Repository interactions for audit, DIN, stats, and reapply data', 'End-to-end user workflows for processing and reporting']
+functionalTests
+: 
+Array(18)
+0
+: 
+{description: "Verify that ProcessInputsAsync successfully proces… callMode is 'U' and loggingLevel is default (1).", expectedResult: 'Response status is 200 OK with a success message and counts of DIN, PIN, LIN, and errored records.', id: '1', preconditions: 'StatsProcessingService and dependencies are proper…ialized; valid audit and DIN files are available.', priority: 'High', …}
+1
+: 
+{description: "Verify that ProcessInputsAsync successfully proces…nputs when callMode is 'R' and loggingLevel is 2.", expectedResult: 'Response status is 200 OK with a success message and counts of DIN, PIN, LIN, and errored records.', id: '2', preconditions: 'StatsProcessingService and dependencies are proper…ialized; valid audit and DIN files are available.', priority: 'High', …}
+2
+: 
+{description: "Verify that ProcessInputsAsync returns BadRequest when callMode is invalid (not 'U' or 'R').", expectedResult: "Response status is 400 BadRequest with message 'In…lMode parameter. Allowed values are 'U' or 'R'.'.", id: '3', preconditions: 'None.', priority: 'High', …}
+3
+: 
+{description: 'Verify that ProcessInputsAsync returns BadRequest when loggingLevel is negative.', expectedResult: "Response status is 400 BadRequest with message 'LoggingLevel must be a non-negative integer.'.", id: '4', preconditions: 'None.', priority: 'High', …}
+4
+: 
+{description: "Verify that GenerateReapplyFileAsync successfully generates reapply file when callMode is 'U'.", expectedResult: "Response status is 200 OK with message 'Reapply file generated successfully.'.", id: '5', preconditions: 'StatsProcessingService and dependencies are properly initialized.', priority: 'High', …}
+5
+: 
+{description: "Verify that GenerateReapplyFileAsync returns BadRequest when callMode is not 'U'.", expectedResult: "Response status is 400 BadRequest with message 'Re…eneration is only allowed in Update mode ('U').'.", id: '6', preconditions: 'None.', priority: 'High', …}
+6
+: 
+{description: 'Verify that GetDisplayStatisticsAsync returns the list of statistics details.', expectedResult: 'Response status is 200 OK with an array of statist…tail objects containing Header and Detail fields.', id: '7', preconditions: 'StatsRepository contains statistics detail records.', priority: 'High', …}
+7
+: 
+{description: 'Verify that audit and DIN files are processed corr…PinCount, LinCount, ErroredRecords) are accurate.', expectedResult: 'Counts in the result match the expected values based on input records.', id: '8', preconditions: 'AuditRepository and DinInputRepository contain a mix of processed, errored, and valid records.', priority: 'High', …}
+8
+: 
+{description: 'Verify that ProcessAuditAndDinFilesAsync throws ArgumentException when callMode is invalid.', expectedResult: 'ArgumentException is thrown with message indicating invalid call mode.', id: '9', preconditions: 'None.', priority: 'High', …}
+9
+: 
+{description: 'Verify that ProcessAuditAndDinFilesAsync throws ArgumentException when loggingLevel is negative.', expectedResult: 'ArgumentException is thrown with message indicating logging level must be non-negative.', id: '10', preconditions: 'None.', priority: 'High', …}
+10
+: 
+{description: 'Verify that GenerateReapplyFileAsync throws ArgumentException when callMode is invalid.', expectedResult: 'ArgumentException is thrown with message indicating invalid call mode.', id: '11', preconditions: 'None.', priority: 'High', …}
+11
+: 
+{description: "Verify that GenerateReapplyFileAsync throws InvalidOperationException when callMode is 'R'.", expectedResult: "InvalidOperationException is thrown with message '…file generation is only allowed in Update mode.'.", id: '12', preconditions: 'None.', priority: 'High', …}
+12
+: 
+{description: "Verify that reapply records are added to repository only when callMode is 'U'.", expectedResult: 'Reapply records are added only in Update mode.', id: '13', preconditions: 'DinInputRepository contains DIN records; ReapplyRepository is empty.', priority: 'Medium', …}
+13
+: 
+{description: 'Verify that TerminateAsync updates the main stats record and adds detailed stats records correctly.', expectedResult: 'Stats record is updated and detailed stats are added.', id: '14', preconditions: 'StatsRepository contains or does not contain a stats record.', priority: 'Medium', …}
+14
+: 
+{description: 'Verify that IsErrorRecord returns true when AuditRecord.ProcessStg indicates error.', expectedResult: 'Returns true for error record, false otherwise.', id: '15', preconditions: 'Create AuditRecord with ProcessStg set to error character.', priority: 'Low', …}
+15
+: 
+{description: 'Verify that IsProcessedRecord returns true when AuditRecord.ProcessStg indicates processed.', expectedResult: 'Returns true for processed record, false otherwise.', id: '16', preconditions: 'Create AuditRecord with ProcessStg set to processed character.', priority: 'Low', …}
+16
+: 
+{description: 'Verify complete user journey of processing inputs and generating reapply file in Update mode.', expectedResult: 'All steps succeed with correct data and statistics updated.', id: '17', preconditions: 'Valid audit and DIN files exist; system initialized.', priority: 'High', …}
+17
+: 
+{description: 'Verify user journey of processing inputs in Read mode and rejection of reapply file generation.', expectedResult: 'Processing succeeds; reapply generation rejected; statistics updated.', id: '18', preconditions: 'Valid audit and DIN files exist; system initialized.', priority: 'High', …}
+length
+: 
+18
+[[Prototype]]
+: 
+Array(0)
+testStrategy
+: 
+"The testing approach focuses on comprehensive functional validation of the StatsController and StatsProcessingService features. It includes positive and negative test cases for all API endpoints, boundary and edge cases for input parameters, and validation of business rules such as allowed call modes and logging levels. End-to-end scenarios simulate complete user journeys to ensure integration of components and correctness of data processing, statistics generation, and error handling. Mocking or stubbing of repositories and dependencies will be used to isolate units and simulate various data conditions. Logging and exception handling paths are also verified to ensure robustness."
+[[Prototype]]
+: 
+Object
+project_id
+: 
+"9c7e5725-4128-491a-8b94-6acd5ed47a49"
